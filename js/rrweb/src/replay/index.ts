@@ -1,8 +1,7 @@
 import { rebuild, buildNodeWithSN } from 'rrweb-snapshot';
 import * as mittProxy from 'mitt';
 import * as smoothscroll from 'smoothscroll-polyfill';
-import { Timer } from './timer';
-import { createPlayerService } from './machine';
+import Timer from './timer';
 import {
   EventType,
   IncrementalSource,
@@ -15,13 +14,13 @@ import {
   missingNodeMap,
   addedNodeMutation,
   missingNode,
+  actionWithDelay,
   incrementalSnapshotEvent,
   incrementalData,
   ReplayerEvents,
   Handler,
   Emitter,
   MediaInteractions,
-  metaEvent,
 } from '../types';
 import { mirror, polyfill } from '../utils';
 import getInjectStyleRules from './styles/inject-style';
@@ -36,105 +35,65 @@ const mitt = (mittProxy as any).default || mittProxy;
 
 const REPLAY_CONSOLE_PREFIX = '[replayer]';
 
-const defaultConfig: playerConfig = {
-  speed: 1,
-  root: document.body,
-  loadTimeout: 0,
-  skipInactive: false,
-  showWarning: true,
-  showDebug: false,
-  blockClass: 'rr-block',
-  liveMode: false,
-  insertStyleRules: [],
-  triggerFocus: true,
-  modifiable: false,
-};
-
 export class Replayer {
   public wrapper: HTMLDivElement;
   public iframe: HTMLIFrameElement;
 
-  public get timer() {
-    return this.service.state.context.timer;
-  }
+  public timer: Timer;
 
+  private events: eventWithTime[] = [];
   private config: playerConfig;
 
   private mouse: HTMLDivElement;
 
   private emitter: Emitter = mitt();
 
+  private baselineTime: number = 0;
+  // record last played event timestamp when paused
+  private lastPlayedEvent: eventWithTime;
+
   private nextUserInteractionEvent: eventWithTime | null;
   private noramlSpeed: number = -1;
 
-  // tslint:disable-next-line: variable-name
-  private legacy_missingNodeRetryMap: missingNodeMap = {};
+  private missingNodeRetryMap: missingNodeMap = {};
 
-  private service!: ReturnType<typeof createPlayerService>;
+  private playing: boolean = false;
 
   constructor(
     events: Array<eventWithTime | string>,
     config?: Partial<playerConfig>,
   ) {
-    if (!config?.liveMode && events.length < 2) {
+    if (events.length < 2) {
       throw new Error('Replayer need at least 2 events.');
     }
+    this.events = events.map((e) => {
+      if (config && config.unpackFn) {
+        return config.unpackFn(e as string);
+      }
+      return e as eventWithTime;
+    });
+    this.handleResize = this.handleResize.bind(this);
+
+    const defaultConfig: playerConfig = {
+      speed: 1,
+      root: document.body,
+      loadTimeout: 0,
+      skipInactive: false,
+      showWarning: true,
+      showDebug: false,
+      blockClass: 'rr-block',
+      liveMode: false,
+      insertStyleRules: [],
+      triggerFocus: true,
+      modifiable: true,
+    };
     this.config = Object.assign({}, defaultConfig, config);
 
-    this.handleResize = this.handleResize.bind(this);
-    this.getCastFn = this.getCastFn.bind(this);
-    this.emitter.on('resize', this.handleResize as Handler);
-
+    this.timer = new Timer(this.config);
     smoothscroll.polyfill();
     polyfill();
     this.setupDom();
-
-    this.service = createPlayerService(
-      {
-        events: events.map((e) => {
-          if (config && config.unpackFn) {
-            return config.unpackFn(e as string);
-          }
-          return e as eventWithTime;
-        }),
-        timer: new Timer(this.config),
-        speed: config?.speed || defaultConfig.speed,
-        timeOffset: 0,
-        baselineTime: 0,
-        lastPlayedEvent: null,
-      },
-      {
-        getCastFn: this.getCastFn,
-        emitter: this.emitter,
-      },
-    );
-    this.service.start();
-    this.service.subscribe((state) => {
-      if (!state.changed) {
-        return;
-      }
-      // publish via emitter
-    });
-
-    // rebuild first full snapshot as the poster of the player
-    // maybe we can cache it for performance optimization
-    const { events: contextEvents } = this.service.state.context;
-    const firstMeta = contextEvents.find((e) => e.type === EventType.Meta);
-    const firstFullsnapshot = contextEvents.find(
-      (e) => e.type === EventType.FullSnapshot,
-    );
-    if (firstMeta) {
-      const { width, height } = firstMeta.data as metaEvent['data'];
-      this.emitter.emit(ReplayerEvents.Resize, {
-        width,
-        height,
-      });
-    }
-    if (firstFullsnapshot) {
-      this.rebuildFullSnapshot(
-        firstFullsnapshot as fullSnapshotEvent & { timestamp: number },
-      );
-    }
+    this.emitter.on('resize', this.handleResize as Handler);
   }
 
   public on(event: string, handler: Handler) {
@@ -142,9 +101,8 @@ export class Replayer {
   }
 
   public setConfig(config: Partial<playerConfig>) {
-    Object.keys(config).forEach((key) => {
-      // @ts-ignore
-      this.config[key] = config[key];
+    Object.keys(config).forEach((key: keyof playerConfig) => {
+      this.config[key] = config[key]!;
     });
     if (!this.config.skipInactive) {
       this.noramlSpeed = -1;
@@ -152,9 +110,8 @@ export class Replayer {
   }
 
   public getMetaData(): playerMetaData {
-    const { events } = this.service.state.context;
-    const firstEvent = events[0];
-    const lastEvent = events[events.length - 1];
+    const firstEvent = this.events[0];
+    const lastEvent = this.events[this.events.length - 1];
     return {
       totalTime: lastEvent.timestamp - firstEvent.timestamp,
     };
@@ -165,8 +122,7 @@ export class Replayer {
   }
 
   public getTimeOffset(): number {
-    const { baselineTime, events } = this.service.state.context;
-    return baselineTime - events[0].timestamp;
+    return this.baselineTime - this.events[0].timestamp;
   }
 
   /**
@@ -179,34 +135,68 @@ export class Replayer {
    * @param timeOffset number
    */
   public play(timeOffset = 0) {
-    this.service.send({ type: 'PLAY', payload: { timeOffset } });
+    this.timer.clear();
+    this.baselineTime = this.events[0].timestamp + timeOffset;
+    const actions = new Array<actionWithDelay>();
+    for (const event of this.events) {
+      const isSync = event.timestamp < this.baselineTime;
+      const castFn = this.getCastFn(event, isSync);
+      if (isSync) {
+        castFn();
+      } else {
+        actions.push({
+          doAction: () => {
+            castFn();
+            this.emitter.emit(ReplayerEvents.EventCast, event);
+          },
+          delay: this.getDelay(event),
+        });
+      }
+    }
+    this.timer.addActions(actions);
+    this.timer.start();
+    this.playing = true;
     this.emitter.emit(ReplayerEvents.Start);
   }
 
   public pause() {
-    this.service.send({ type: 'PAUSE' });
+    this.timer.clear();
+    this.playing = false;
     this.emitter.emit(ReplayerEvents.Pause);
   }
 
   public resume(timeOffset = 0) {
-    this.service.send({ type: 'RESUME', payload: { timeOffset } });
+    this.timer.clear();
+    this.baselineTime = this.events[0].timestamp + timeOffset;
+    const actions = new Array<actionWithDelay>();
+    for (const event of this.events) {
+      if (
+        event.timestamp <= this.lastPlayedEvent.timestamp ||
+        event === this.lastPlayedEvent
+      ) {
+        continue;
+      }
+      const castFn = this.getCastFn(event);
+      actions.push({
+        doAction: castFn,
+        delay: this.getDelay(event),
+      });
+    }
+    this.timer.addActions(actions);
+    this.timer.start();
+    this.playing = true;
     this.emitter.emit(ReplayerEvents.Resume);
-  }
-
-  public startLive(baselineTime?: number) {
-    this.service.send({ type: 'TO_LIVE', payload: { baselineTime } });
   }
 
   public addEvent(rawEvent: eventWithTime | string) {
     const event = this.config.unpackFn
       ? this.config.unpackFn(rawEvent as string)
       : (rawEvent as eventWithTime);
-    Promise.resolve().then(() =>
-      this.service.send({ type: 'ADD_EVENT', payload: { event } }),
-    );
+    const castFn = this.getCastFn(event, true);
+    castFn();
   }
 
-  public enableInteract() {
+   public enableInteract() {
     this.iframe.setAttribute('scrolling', 'auto');
     this.iframe.style.pointerEvents = 'auto';
   }
@@ -215,44 +205,50 @@ export class Replayer {
     this.iframe.setAttribute('scrolling', 'no');
     this.iframe.style.pointerEvents = 'none';
   }
-
+  
   private setupDom() {
     this.wrapper = document.createElement('div');
     this.wrapper.classList.add('replayer-wrapper');
-    this.config.root!.appendChild(this.wrapper);
+    this.config.root.appendChild(this.wrapper);
 
     this.mouse = document.createElement('div');
     this.mouse.classList.add('replayer-mouse');
     this.wrapper.appendChild(this.mouse);
 
     this.iframe = document.createElement('iframe');
-	this.iframe.setAttribute('sandbox', 'allow-same-origin');
-    console.log("create_dom, modifiable is ", this.config.modifiable);
+    this.iframe.setAttribute('sandbox', 'allow-same-origin');
     this.config.modifiable ? this.enableInteract() : this.disableInteract();
     this.wrapper.appendChild(this.iframe);
   }
 
   private handleResize(dimension: viewportResizeDimention) {
-    this.iframe.setAttribute('width', String(dimension.width));
-    this.iframe.setAttribute('height', String(dimension.height));
+    this.iframe.width = `${dimension.width}px`;
+    this.iframe.height = `${dimension.height}px`;
+  }
+
+  // TODO: add speed to mouse move timestamp calculation
+  private getDelay(event: eventWithTime): number {
+    // Mouse move events was recorded in a throttle function,
+    // so we need to find the real timestamp by traverse the time offsets.
+    if (
+      event.type === EventType.IncrementalSnapshot &&
+      event.data.source === IncrementalSource.MouseMove
+    ) {
+      const firstOffset = event.data.positions[0].timeOffset;
+      // timeOffset is a negative offset to event.timestamp
+      const firstTimestamp = event.timestamp + firstOffset;
+      event.delay = firstTimestamp - this.baselineTime;
+      return firstTimestamp - this.baselineTime;
+    }
+    event.delay = event.timestamp - this.baselineTime;
+    return event.timestamp - this.baselineTime;
   }
 
   private getCastFn(event: eventWithTime, isSync = false) {
-    const { events } = this.service.state.context;
     let castFn: undefined | (() => void);
     switch (event.type) {
       case EventType.DomContentLoaded:
       case EventType.Load:
-        break;
-      case EventType.Custom:
-        castFn = () => {
-          /**
-           * emit custom-event and pass the event object.
-           *
-           * This will add more value to the custom event and allows the client to react for custom-event.
-           */
-          this.emitter.emit(ReplayerEvents.CustomEvent, event);
-        };
         break;
       case EventType.Meta:
         castFn = () =>
@@ -275,7 +271,7 @@ export class Replayer {
             this.restoreSpeed();
           }
           if (this.config.skipInactive && !this.nextUserInteractionEvent) {
-            for (const _event of events) {
+            for (const _event of this.events) {
               if (_event.timestamp! <= event.timestamp!) {
                 continue;
               }
@@ -308,10 +304,9 @@ export class Replayer {
       if (castFn) {
         castFn();
       }
-      this.service.send({ type: 'CAST_EVENT', payload: { event } });
-      if (event === events[events.length - 1]) {
+      this.lastPlayedEvent = event;
+      if (event === this.events[this.events.length - 1]) {
         this.restoreSpeed();
-        this.service.send('END');
         this.emitter.emit(ReplayerEvents.Finish);
       }
     };
@@ -321,13 +316,13 @@ export class Replayer {
   private rebuildFullSnapshot(
     event: fullSnapshotEvent & { timestamp: number },
   ) {
-    if (Object.keys(this.legacy_missingNodeRetryMap).length) {
+    if (Object.keys(this.missingNodeRetryMap).length) {
       console.warn(
         'Found unresolved missing node map',
-        this.legacy_missingNodeRetryMap,
+        this.missingNodeRetryMap,
       );
     }
-    this.legacy_missingNodeRetryMap = {};
+    this.missingNodeRetryMap = {};
     mirror.map = rebuild(event.data.node, this.iframe.contentDocument!)[1];
     const styleEl = document.createElement('style');
     const { documentElement, head } = this.iframe.contentDocument!;
@@ -350,17 +345,26 @@ export class Replayer {
     if (head) {
       const unloadSheets: Set<HTMLLinkElement> = new Set();
       let timer: number;
-      let beforeLoadState = this.service.state;
       head
         .querySelectorAll('link[rel="stylesheet"]')
         .forEach((css: HTMLLinkElement) => {
           if (!css.sheet) {
+            if (unloadSheets.size === 0) {
+              this.timer.clear(); // artificial pause
+              this.emitter.emit(ReplayerEvents.LoadStylesheetStart);
+              timer = window.setTimeout(() => {
+                if (this.playing) {
+                  this.resume(this.getCurrentTime());
+                }
+                // mark timer was called
+                timer = -1;
+              }, this.config.loadTimeout);
+            }
             unloadSheets.add(css);
             css.addEventListener('load', () => {
               unloadSheets.delete(css);
-              // all loaded and timer not released yet
               if (unloadSheets.size === 0 && timer !== -1) {
-                if (beforeLoadState.matches('playing')) {
+                if (this.playing) {
                   this.resume(this.getCurrentTime());
                 }
                 this.emitter.emit(ReplayerEvents.LoadStylesheetEnd);
@@ -371,19 +375,6 @@ export class Replayer {
             });
           }
         });
-
-      if (unloadSheets.size > 0) {
-        // find some unload sheets after iterate
-        this.service.send({ type: 'PAUSE' });
-        this.emitter.emit(ReplayerEvents.LoadStylesheetStart);
-        timer = window.setTimeout(() => {
-          if (beforeLoadState.matches('playing')) {
-            this.resume(this.getCurrentTime());
-          }
-          // mark timer was called
-          timer = -1;
-        }, this.config.loadTimeout);
-      }
     }
   }
 
@@ -391,7 +382,6 @@ export class Replayer {
     e: incrementalSnapshotEvent & { timestamp: number },
     isSync: boolean,
   ) {
-    const { baselineTime } = this.service.state.context;
     const { data: d } = e;
     switch (d.source) {
       case IncrementalSource.Mutation: {
@@ -411,9 +401,7 @@ export class Replayer {
           }
         });
 
-        const legacy_missingNodeMap: missingNodeMap = {
-          ...this.legacy_missingNodeRetryMap,
-        };
+        const missingNodeMap: missingNodeMap = { ...this.missingNodeRetryMap };
         const queue: addedNodeMutation[] = [];
 
         const appendNode = (mutation: addedNodeMutation) => {
@@ -421,7 +409,12 @@ export class Replayer {
           if (!parent) {
             return queue.push(mutation);
           }
-
+          const target = buildNodeWithSN(
+            mutation.node,
+            this.iframe.contentDocument!,
+            mirror.map,
+            true,
+          ) as Node;
           let previous: Node | null = null;
           let next: Node | null = null;
           if (mutation.previousId) {
@@ -430,21 +423,9 @@ export class Replayer {
           if (mutation.nextId) {
             next = mirror.getNode(mutation.nextId) as Node;
           }
-          // next not present at this moment
-          if (mutation.nextId !== null && mutation.nextId !== -1 && !next) {
-            return queue.push(mutation);
-          }
 
-          const target = buildNodeWithSN(
-            mutation.node,
-            this.iframe.contentDocument!,
-            mirror.map,
-            true,
-          ) as Node;
-
-          // legacy data, we should not have -1 siblings any more
           if (mutation.previousId === -1 || mutation.nextId === -1) {
-            legacy_missingNodeMap[mutation.node.id] = {
+            missingNodeMap[mutation.node.id] = {
               node: target,
               mutation,
             };
@@ -468,12 +449,7 @@ export class Replayer {
           }
 
           if (mutation.previousId || mutation.nextId) {
-            this.legacy_resolveMissingNode(
-              legacy_missingNodeMap,
-              parent,
-              target,
-              mutation,
-            );
+            this.resolveMissingNode(missingNodeMap, parent, target, mutation);
           }
         };
 
@@ -489,8 +465,8 @@ export class Replayer {
           appendNode(mutation);
         }
 
-        if (Object.keys(legacy_missingNodeMap).length) {
-          Object.assign(this.legacy_missingNodeRetryMap, legacy_missingNodeMap);
+        if (Object.keys(missingNodeMap).length) {
+          Object.assign(this.missingNodeRetryMap, missingNodeMap);
         }
 
         d.texts.forEach((mutation) => {
@@ -531,7 +507,7 @@ export class Replayer {
               doAction: () => {
                 this.moveAndHover(d, p.x, p.y, p.id);
               },
-              delay: p.timeOffset + e.timestamp - baselineTime,
+              delay: p.timeOffset + e.timestamp - this.baselineTime,
             };
             this.timer.addAction(action);
           });
@@ -556,7 +532,7 @@ export class Replayer {
         const { triggerFocus } = this.config;
         switch (d.type) {
           case MouseInteractions.Blur:
-            if ('blur' in ((target as Node) as HTMLElement)) {
+            if (((target as Node) as HTMLElement).blur) {
               ((target as Node) as HTMLElement).blur();
             }
             break;
@@ -705,7 +681,7 @@ export class Replayer {
     }
   }
 
-  private legacy_resolveMissingNode(
+  private resolveMissingNode(
     map: missingNodeMap,
     parent: Node,
     target: Node,
@@ -718,18 +694,18 @@ export class Replayer {
       const { node, mutation } = previousInMap as missingNode;
       parent.insertBefore(node, target);
       delete map[mutation.node.id];
-      delete this.legacy_missingNodeRetryMap[mutation.node.id];
+      delete this.missingNodeRetryMap[mutation.node.id];
       if (mutation.previousId || mutation.nextId) {
-        this.legacy_resolveMissingNode(map, parent, node as Node, mutation);
+        this.resolveMissingNode(map, parent, node as Node, mutation);
       }
     }
     if (nextInMap) {
       const { node, mutation } = nextInMap as missingNode;
       parent.insertBefore(node, target.nextSibling);
       delete map[mutation.node.id];
-      delete this.legacy_missingNodeRetryMap[mutation.node.id];
+      delete this.missingNodeRetryMap[mutation.node.id];
       if (mutation.previousId || mutation.nextId) {
-        this.legacy_resolveMissingNode(map, parent, node as Node, mutation);
+        this.resolveMissingNode(map, parent, node as Node, mutation);
       }
     }
   }

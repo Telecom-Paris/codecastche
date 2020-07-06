@@ -1,5 +1,5 @@
-import { playerConfig, actionWithDelay, eventWithTime } from '../types';
-export declare class Timer {
+import { playerConfig, actionWithDelay } from '../types';
+export default class Timer {
     timeOffset: number;
     private actions;
     private config;
@@ -11,4 +11,3 @@ export declare class Timer {
     clear(): void;
     private findActionIndex;
 }
-export declare function getDelay(event: eventWithTime, baselineTime: number): number;

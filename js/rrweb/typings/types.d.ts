@@ -127,14 +127,6 @@ export declare type hooksParam = {
     mediaInteaction?: mediaInteractionCallback;
     styleSheetRule?: styleSheetRuleCallback;
 };
-export declare type mutationRecord = {
-    type: string;
-    target: Node;
-    oldValue: string | null;
-    addedNodes: NodeList;
-    removedNodes: NodeList;
-    attributeName: string | null;
-};
 export declare type textCursor = {
     node: Node;
     value: string | null;
@@ -161,7 +153,7 @@ export declare type removedNodeMutation = {
 };
 export declare type addedNodeMutation = {
     parentId: number;
-    previousId?: number | null;
+    previousId: number | null;
     nextId: number | null;
     node: serializedNodeWithId;
 };
@@ -296,7 +288,6 @@ export declare enum ReplayerEvents {
     SkipStart = "skip-start",
     SkipEnd = "skip-end",
     MouseInteraction = "mouse-interaction",
-    EventCast = "event-cast",
-    CustomEvent = "custom-event"
+    EventCast = "event-cast"
 }
 export {};

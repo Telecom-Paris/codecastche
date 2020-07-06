@@ -11,26 +11,10 @@ function toRecordPath(path) {
     .replace('rrweb', 'rrweb-record');
 }
 
-function toRecordPackPath(path) {
+function toPackPath(path) {
   return path
-    .replace(/^([\w]+)\//, '$1/record/')
-    .replace('rrweb', 'rrweb-record-pack');
-}
-
-function toReplayPath(path) {
-  return path
-    .replace(/^([\w]+)\//, '$1/replay/')
-    .replace('rrweb', 'rrweb-replay');
-}
-
-function toReplayUnpackPath(path) {
-  return path
-    .replace(/^([\w]+)\//, '$1/replay/')
-    .replace('rrweb', 'rrweb-replay-unpack');
-}
-
-function toAllPath(path) {
-  return path.replace('rrweb', 'rrweb-all');
+    .replace(/^([\w]+)\//, '$1/packer/')
+    .replace('rrweb', 'rrweb-pack');
 }
 
 function toMinPath(path) {
@@ -44,54 +28,36 @@ const namedExports = {
 };
 
 const baseConfigs = [
-  // record only
   {
     input: './src/record/index.ts',
     name: 'rrwebRecord',
     pathFn: toRecordPath,
   },
-  // record and pack
   {
-    input: './src/entries/record-pack.ts',
-    name: 'rrwebRecord',
-    pathFn: toRecordPackPath,
+    input: './src/packer/pack.ts',
+    name: 'rrwebPack',
+    pathFn: toPackPath,
   },
-  // replay only
-  {
-    input: './src/replay/index.ts',
-    name: 'rrwebReplay',
-    pathFn: toReplayPath,
-  },
-  // replay and unpack
-  {
-    input: './src/entries/replay-unpack.ts',
-    name: 'rrwebReplay',
-    pathFn: toReplayUnpackPath,
-  },
-  // record and replay
   {
     input: './src/index.ts',
     name: 'rrweb',
     pathFn: (p) => p,
-  },
-  // all in one
-  {
-    input: './src/entries/all.ts',
-    name: 'rrweb',
-    pathFn: toAllPath,
   },
 ];
 
 let configs = [];
 
 for (const c of baseConfigs) {
-  const basePlugins = [resolve(), commonjs({ namedExports }), typescript()];
-  const plugins = basePlugins.concat(
+  const plugins = [
+    resolve(),
+    commonjs({ namedExports }),
+    typescript(),
     postcss({
       extract: false,
       inject: false,
     }),
-  );
+  ];
+  const minifyPlugins = plugins.concat(terser());
   // browser
   configs.push({
     input: c.input,
@@ -107,14 +73,7 @@ for (const c of baseConfigs) {
   // browser + minify
   configs.push({
     input: c.input,
-    plugins: basePlugins.concat(
-      postcss({
-        extract: true,
-        minimize: true,
-        sourceMap: true,
-      }),
-      terser(),
-    ),
+    plugins: minifyPlugins,
     output: [
       {
         name: c.name,
@@ -131,7 +90,7 @@ for (const c of baseConfigs) {
     output: [
       {
         format: 'cjs',
-        file: c.pathFn('lib/rrweb.js'),
+        file: c.pathFn(pkg.main),
       },
     ],
   });

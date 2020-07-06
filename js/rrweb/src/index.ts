@@ -1,7 +1,6 @@
 import record from './record';
 import { Replayer } from './replay';
 import { mirror } from './utils';
-import * as utils from './utils';
 
 export {
   EventType,
@@ -9,7 +8,8 @@ export {
   MouseInteractions,
   ReplayerEvents,
 } from './types';
+export { pack, unpack } from './packer';
 
 const { addCustomEvent } = record;
 
-export { record, addCustomEvent, Replayer, mirror, utils };
+export { record, addCustomEvent, Replayer, mirror };

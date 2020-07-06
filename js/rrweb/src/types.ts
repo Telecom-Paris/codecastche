@@ -166,16 +166,6 @@ export type hooksParam = {
   styleSheetRule?: styleSheetRuleCallback;
 };
 
-// https://dom.spec.whatwg.org/#interface-mutationrecord
-export type mutationRecord = {
-  type: string,
-  target: Node,
-  oldValue: string | null,
-  addedNodes: NodeList,
-  removedNodes: NodeList,
-  attributeName: string | null,
-}
-
 export type textCursor = {
   node: Node;
   value: string | null;
@@ -205,8 +195,7 @@ export type removedNodeMutation = {
 
 export type addedNodeMutation = {
   parentId: number;
-  // Newly recorded mutations will not have previousId any more, just for compatibility
-  previousId?: number | null;
+  previousId: number | null;
   nextId: number | null;
   node: serializedNodeWithId;
 };
@@ -376,5 +365,4 @@ export enum ReplayerEvents {
   SkipEnd = 'skip-end',
   MouseInteraction = 'mouse-interaction',
   EventCast = 'event-cast',
-  CustomEvent = 'custom-event',
 }
