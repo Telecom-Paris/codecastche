@@ -1,0 +1,13 @@
+*.tmp
+dist
+*.vgcore
+node_modules
+
+.vscode
+package-lock.json
+yarn.lock
+build
+es
+lib
+
+temp
