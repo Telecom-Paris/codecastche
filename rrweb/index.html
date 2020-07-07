@@ -1,0 +1,75 @@
+<html>
+	<head>
+		<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/rrweb@latest/dist/rrweb.min.css" />
+		<!--<script src="https://cdn.jsdelivr.net/npm/rrweb@latest/dist/rrweb.min.js"></script>-->
+		<script src="js/rrweb/dist/rrweb.js"></script>
+
+		<!-- UI ONLY -->
+		<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/rrweb-player@latest/dist/style.css"/>
+		<!--<script src="https://cdn.jsdelivr.net/npm/rrweb-player@latest/dist/index.js"></script>-->
+		<script src="js/rrweb-player/dist/index.js"></script>
+
+		<!--audio recorder -->
+		<script src="js/recorder/app.js"></script>
+		<script src="js/recorder/WebAudioRecorder.min.js"></script>
+		<script>
+			let events = [];
+			let isActive;
+			let interval;
+
+			function start_rec()
+			{
+				isActive = rrweb.record({
+					emit(event) {
+					// push event into the events array
+					events.push(event);
+					},
+				});
+				// save events every 10 seconds
+				interval = setInterval(save, 1000);
+			}
+
+			// this function will send events to the backend and reset the events array
+			function save() {
+				console.log(events);
+			}
+
+			function stopRecord()
+			{
+				if (isActive)
+					isActive();
+				clearInterval(interval);
+			}
+
+			function replay(){
+				const replayer = new rrweb.Replayer(events, {root: document.body, modifiable:true});
+				replayer.play();
+			}
+
+			function ui(){
+				new rrwebPlayer({
+					target: document.body,
+					data: {
+						events,
+						autoPlay: true,
+					},
+				});
+			}
+		</script>
+	</head>
+	<body>
+	Hey, how are you ?
+	<br><br>
+	<textarea id="story" name="story"> </textarea>
+	<br><br>
+	<textarea id="secondStory"> </textarea>
+	<br><br><br>
+	<form>
+	<button type="button" id="recordButton" onclick="start_rec()">StartRec</button>
+	<button type="button" id="stopButton" onclick="stopRecord()">StopRec</button>
+	<button type="button" onclick="replay()">Replay</button>
+	<br>
+	<button type="button" onclick="ui()">UI</button>
+	</form>
+	</body>
+</html>
