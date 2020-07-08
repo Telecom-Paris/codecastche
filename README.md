@@ -1,5 +1,11 @@
 # codecastche
 
+## Tutorial:
+
+### Theia and docker:
+
+[Compile theia for ubuntu based docker](theia/THEIA.md)
+
 ## Useful documentation:
 
 ### Che eclipse:
